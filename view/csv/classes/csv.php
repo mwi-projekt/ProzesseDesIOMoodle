@@ -21,6 +21,9 @@
  * @license http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
+use PhpOffice\PhpSpreadsheet\Spreadsheet;
+use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
+
 class dataformview_csv_csv extends dataformview_aligned_aligned {
 
     const EXPORT_ALL = 'all';
@@ -94,51 +97,135 @@ class dataformview_csv_csv extends dataformview_aligned_aligned {
     /**
      *
      */
-    public function process_export($range = self::EXPORT_PAGE) {
-        global $CFG;
+public function process_export($range = self::EXPORT_PAGE) {
+    global $CFG;
 
-        require_once($CFG->libdir . '/csvlib.class.php');
+    require_once($CFG->libdir . '/csvlib.class.php');
+    require_once($CFG->libdir . '/PhpSpreadsheet/vendor/autoload.php');
 
-        if (!$csvcontent = $this->get_csv_content($range)) {
-            return;
-        }
-        $dataformname = $this->df->name;
-        $delimiter = \csv_import_reader::get_delimiter($this->_delimiter);
-        $filename = clean_filename("{$dataformname}-export");
-        $filename .= clean_filename('-' . gmdate("Ymd_Hi"));
-        $filename .= clean_filename("-{$this->_delimiter}_separated");
-        $filename .= '.csv';
-
-        $patterns = array("\n");
-        $adjustments = array('');
-        if ($this->_enclosure) {
-            $patterns[] = $this->_enclosure;
-            $adjustments[] = '&#' . ord($this->_enclosure) . ';';
-        } else {
-            $patterns[] = $delimiter;
-            $adjustments[] = '&#' . ord($delimiter) . ';';
-        }
-        $returnstr = '';
-        foreach ($csvcontent as $row) {
-            foreach ($row as $key => $column) {
-                $value = str_replace($patterns, $adjustments, $column);
-                $row[$key] = $this->_enclosure. $value. $this->_enclosure;
-            }
-            $returnstr .= implode($delimiter, $row) . "\n";
-        }
-
-        // Convert encoding.
-        $returnstr = mb_convert_encoding($returnstr, $this->_encoding, 'UTF-8');
-
-        header("Content-Type: application/download\n");
-        header("Content-Disposition: attachment; filename=\"$filename\"");
-        header('Expires: 0');
-        header('Cache-Control: must-revalidate,post-check=0,pre-check=0');
-        header('Pragma: public');
-
-        echo $returnstr;
-        exit;
+    if (!$csvcontent = $this->get_csv_content($range)) {
+        return;
     }
+    $dataformname = $this->df->name;
+    $delimiter = \csv_import_reader::get_delimiter($this->_delimiter);
+    $filename = clean_filename("{$dataformname}-Export_Anmeldeliste");
+    $filename .= clean_filename('-' . gmdate("d-m-Y_H-i"));
+    $archive_file_name = $filename.'.zip';
+    $filename .= clean_filename("-{$this->_delimiter}_separated");
+    $filename .= '.xlsx'; // Änderung: Dateierweiterung zu .xlsx ändern
+
+    $patterns = array("\n");
+    $adjustments = array('');
+    if ($this->_enclosure) {
+        $patterns[] = $this->_enclosure;
+        $adjustments[] = '&#' . ord($this->_enclosure) . ';';
+    } else {
+        $patterns[] = $delimiter;
+        $adjustments[] = '&#' . ord($delimiter) . ';';
+    }
+    $returnstr = '';
+
+    if (!function_exists('str_contains')) {
+        function str_contains (string $haystack, string $needle) {
+            return empty($needle) || strpos($haystack, $needle) !== false;
+        }
+    }
+
+    if (!function_exists('str_starts_with')) {
+        function str_starts_with($str, $start) {
+          return (@substr_compare($str, $start, 0, strlen($start))==0);
+        }
+    }
+
+    $file_paths = array();
+    $eau_names = array();
+    $columnIdEauName = -1;
+
+    foreach ($csvcontent as $keyRow => $row) {
+        $file_paths_temp = array();
+        foreach ($row as $keyColumn => $column) {
+            $value = str_replace($patterns, $adjustments, $column);
+            $search = '&#44;';
+            $rep = '-';
+            $value = str_replace($search, $rep, $value);
+            // Span-Tag Remover (Current State)
+            if (preg_match('/<span.*?>(.*?)<\/span>/', $value, $matches)) {
+                $value = $matches[1];
+            }
+            // A-Tag Remover (Current State)
+            if (preg_match('/<a.*?>(.*?)<\/a>/', $value, $matches)) {
+                $value = $matches[1];
+            }
+
+            if($columnIdEauName == $keyColumn) {
+                array_push($eau_names, $value);
+            }
+            if($keyRow == 0 && strcmp($value, "EAU:name") == 0) {
+                $columnIdEauName = $keyColumn;
+            }
+
+            if(str_starts_with($value, 'http')) {
+                $pattern = '/http/';
+                $urls = preg_split($pattern, $value, -1, PREG_SPLIT_NO_EMPTY);
+                foreach ($urls as $url) {
+                    array_push($file_paths_temp, $url);
+                }
+            }
+
+            $row[$keyColumn] = $this->_enclosure. $value. $this->_enclosure;
+        }
+        if($keyRow != 0) {
+            array_push($file_paths, $file_paths_temp);
+        }
+        $csvcontent[$keyRow] = $row;
+    }
+
+    $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
+    $sheet = $spreadsheet->getActiveSheet();
+    $sheet->fromArray($csvcontent, NULL, 'A1'); // CSV-Daten in Excel-Tabelle einfügen
+
+    $writer = \PhpOffice\PhpSpreadsheet\IOFactory::createWriter($spreadsheet, 'Xlsx');
+    $writer->save($filename); // Excel-Datei speichern
+
+    $zip = new ZipArchive();
+    //create the file and throw the error if unsuccessful
+    if ($zip->open($archive_file_name, ZIPARCHIVE::CREATE )!==TRUE) {
+        exit("cannot open <$archive_file_name>\n");
+    }
+    //add each files of $file_name array to archive
+    foreach($file_paths as $i=>$folder) {
+        if(!empty($folder)) {
+            if(empty($eau_names)) {
+                $zip->addEmptyDir($i, ZipArchive::FL_ENC_UTF_8);
+                foreach($folder as $file) {
+                    $get_file = file_get_contents($file);
+                    $zip->addFromString($i.'/'.urldecode(basename($file)),$get_file);
+                }
+            } else {
+                $zip->addEmptyDir($i.' - '.$eau_names[$i], ZipArchive::FL_ENC_UTF_8);
+                foreach($folder as $file) {
+                    $get_file = file_get_contents($file);
+                    $zip->addFromString($i.' - '.$eau_names[$i].'/'.urldecode(basename($file)),$get_file);
+                }
+            }
+        }
+    }
+    $zip->addFile($filename, basename($filename)); // Hinzufügen der Excel-Datei zum Archiv
+    $zip->close();
+
+    header("Content-type: application/zip");
+    header("Content-Disposition: attachment; filename=$archive_file_name");
+    header("Pragma: no-cache");
+    header("Expires: 0");
+    readfile("$archive_file_name");
+
+    unlink($archive_file_name);
+    unlink($filename);
+
+    exit;
+}
+
+
 
     /**
      *
