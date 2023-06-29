@@ -158,7 +158,7 @@ class dataformfield_time_renderer extends mod_dataform\pluginbase\dataformfieldr
             $tmoptions['stopyear'] = $field->stop_year;
         }
         $mform->addElement("date_{$time}selector", $fieldname, null, $tmoptions);
-        // $mform->addRule($fieldname, null, 'required', null, 'client');.
+        $mform->addRule($fieldname, null, 'required', null, 'client');
         $mform->setDefault($fieldname, $content);
     }
 
